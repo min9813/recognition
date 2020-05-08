@@ -18,21 +18,38 @@ def my_makedirs(path):
 
 
 def main():
+    # argument　という色々条件を外から指定してファイル実行できるものを作成、
+    # これはutils/configuration.py にあるmake_config関数を読み込んでいる。
     args = utils.configuration.make_config()
 
+    # transformというnumpy -> pytorchのtensorに変換してディープラーニング用のデータクラスに変換するものを用意
+    # c_aug, s_augはdata augumentationというものでいまは使わないのでNoneになっている。
+    # これは utils/aug_and_trans.py の get_augumentation_and_transformに入っている。
     trans, c_aug, s_aug = utils.aug_and_trans.get_augumentation_and_transform(False, False)
 
+    # データセットを楽にロードしてくれるもの。
+    # dataset/face_data.py の Dataset クラスが該当。
+    # trainデータと validationデータを作成
     train_dataset = dataset.face_data.Dataset(args, "train", trans=trans)
     valid_dataset = dataset.face_data.Dataset(args, "test", trans=trans)
 
+    # バッチ学習を楽にしてくれるものをpytorchが提供してくれているのでそれを使う。
+    #　使い方は自分で作ったdataクラスをこのdataloaderに入れる。
+    # num_workersは使うスレッド数なので自前のノートPCだと0でいいと思う。
+    # shuffle はデータをロードする順番をシャッフルするかということ。
+    # trainデータはshuffleして、validationデータはしないのが普通。
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=False)
 
     mid_channel = 64
+    # モデル構造。networks/lenet.py のCNNクラス。
+
     net = network.lenet.CNN(mid_channel=mid_channel).float()
 
+    # optimzier
+    # モデルの重みアップデータ方法を定義してくれるもの
     if args.optimizer == "adam":
         optimizer = torch.optim.Adam(
             net.parameters(), lr=args.lr, weight_decay=5e-4)
@@ -42,6 +59,7 @@ def main():
     else:
         raise ValueError
 
+    # 損失関数、回帰ならとりあえず二乗誤差のmean squared lossでいいかと
     if args.criterion == "mse":
         criterion = torch.nn.MSELoss()
     elif args.criterion == "sigmoid":
@@ -49,6 +67,7 @@ def main():
     else:
         raise ValueError
 
+    # 途中まで学習したモデルを途中から再開するかどうか。
     if args.resume:
         print('resume the model parameters from: ',
               args.model_path, args.margin_path)
@@ -57,21 +76,30 @@ def main():
     best_loss = np.inf
     best_iter = -1
     st = time.time()
+
+    # 実際の学習中身
+    # epoch はデータ全体を１回学習することを表す。
+    # args.total_epoch　回 データを学習する感じ。
     for epoch in range(1, args.total_epoch+1):
 
+        # train
         train_result = train(net, train_loader, optimizer,
                              criterion, args, epoch)
 
+        # valid、trainデータにオーバーフィットしていないか確認する。
         valid_result = valid(net, valid_loader, criterion, args, epoch)
 
+        # ログ出力
         trn_msg = ""
         for key, value in train_result.items():
             trn_msg += f" {key}:{value} "
 
+        # ログ出力
         val_msg = ""
         for key, value in valid_result.items():
             val_msg += f" {key}:{value} "
 
+        # メインで監視するロスを出力
         monitor_value = valid_result["loss_total"]
 
         print("Train:", trn_msg)
@@ -85,10 +113,16 @@ def main():
         msg = 'Saving checkpoint: {}'.format(epoch)
         print(msg)
 
-        model_save_dir = args.model_save_dir
+        # ここから下はモデルとoptimizer保存
+        # ベストの結果が出たものと最新のモデルのみ保存している。
+        model_save_dir = args.model_save_dir # これは保存ディレクトりを作っている
         my_makedirs(model_save_dir)
+
+        # 1エポック前に保存した最新モデルを削除したいのでそれを正規表現で探している
         old_model_path = list(pathlib.Path(
             args.model_save_dir).glob("latest*.ckpt"))
+
+        # ここら辺はパスをつなげている。
         save_net_path = os.path.join(
             model_save_dir, 'latest_{:0>6}_amp_net.ckpt'.format(epoch))
         save_best_net_path = os.path.join(
@@ -118,6 +152,8 @@ def main():
 
         for p in old_model_path:
             os.remove(str(p))
+
+        # デバッグ用。2エポック学習したら終わり。
         if args.debug:
             if epoch - args.start_epoch > 0:
                 break
